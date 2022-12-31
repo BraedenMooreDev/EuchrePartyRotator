@@ -104,7 +104,7 @@ impl eframe::App for TemplateApp {
         }
 
         egui::SidePanel::left("side_panel").show(ctx, |ui| {
-            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+            ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 ui.add_space(10.0);
                 ui.heading("Euchre Party Rotator");
                 ui.add_space(10.0);
@@ -122,7 +122,10 @@ impl eframe::App for TemplateApp {
                 });
 
                 ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
 
+                ui.label("Number of Players");
                 if ui.add(egui::Slider::new(playerCount, 4..=50).integer()).changed() {
 
                     playerNames.shrink_to(*playerCount);
@@ -130,11 +133,16 @@ impl eframe::App for TemplateApp {
                     *tableCount = *playerCount / 4;
                     *outCount = *playerCount % 4;
 
-                    if *outCount == 0 {
-                        *gameCount = *playerCount - 1;
-                    } else {
-                        *gameCount = *playerCount;
-                    }
+                    *cardData = shuffle(*playerCount, *tableCount, *gameCount, *outCount);
+                }
+
+                ui.label("Number of Rounds");
+                if ui.add(egui::Slider::new(gameCount, 1..=50).integer()).changed() {
+
+                    playerNames.shrink_to(*playerCount);
+
+                    *tableCount = *playerCount / 4;
+                    *outCount = *playerCount % 4;
 
                     *cardData = shuffle(*playerCount, *tableCount, *gameCount, *outCount);
                 }
