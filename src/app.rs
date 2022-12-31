@@ -1,15 +1,19 @@
 #![allow(non_snake_case)]
 #![allow(unused)]
 use egui::{Widget, Vec2, Frame};
+use genpdf::{Element, Mm};
+use genpdf::style::StyledString;
 use rand::Rng;
 use rand::rngs::mock::StepRng;
 use shuffle::shuffler::Shuffler;
 use shuffle::irs::Irs;
+use std::fs;
+use std::path::PathBuf;
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
-pub struct TemplateApp {
+pub struct RotatorApp {
     // Example stuff:
 
     // this how you opt-out of serialization of a member
@@ -30,7 +34,7 @@ pub struct TemplateApp {
     background_color: egui::Color32
 }
 
-impl Default for TemplateApp {
+impl Default for RotatorApp {
     fn default() -> Self {
         Self {
             // Example stuff:
@@ -52,7 +56,7 @@ impl Default for TemplateApp {
     }
 }
 
-impl TemplateApp {
+impl RotatorApp {
     /// Called once before the first frame.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // This is also where you can customize the look and feel of egui using
@@ -68,7 +72,7 @@ impl TemplateApp {
     }
 }
 
-impl eframe::App for TemplateApp {
+impl eframe::App for RotatorApp {
 
     /// Called by the frame work to save state before shutdown.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -85,45 +89,33 @@ impl eframe::App for TemplateApp {
         // Tip: a good default choice is to just keep the `CentralPanel`.
         // For inspiration and more examples, go to https://emilk.github.io/egui
 
-        if false {
-            #[cfg(not(target_arch = "wasm32"))] // no File->Quit on web pages!
-            egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-                // The top panel is often a good place for a menu bar:
-                egui::menu::bar(ui, |ui| {
-                    ui.menu_button("Settings", |ui| {
+        #[cfg(not(target_arch = "wasm32"))] // no File->Quit on web pages!
+        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            // The top panel is often a good place for a menu bar:
+            egui::menu::bar(ui, |ui| {
+                if ui.button("Clear Names").clicked() {
 
-                        ui.add(egui::Separator::default());
+                    *playerNames = Vec::new();
+                }
 
-                        if ui.button("Settings").clicked() {
+                if ui.button("Settings").clicked() {
 
-                            *settingsOpen = !*settingsOpen;
-                        }
-                    });
-                });
+                    *settingsOpen = !*settingsOpen;
+                }
+
+                if ui.button("Export").clicked() {
+
+                    if let Some(path) = rfd::FileDialog::new().add_filter("PDF", &["pdf"]).save_file()  {
+                        exportPDF(path, *tableCount, *outCount, *gameCount, separator.clone(), *displayNames, cardData.clone(), playerNames.clone());
+                    }
+                }
             });
-        }
+        });
 
         egui::SidePanel::left("side_panel").show(ctx, |ui| {
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+
                 ui.add_space(10.0);
-                ui.heading("Euchre Party Rotator");
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-
-                    if ui.button("Clear Names").clicked() {
-
-                        *playerNames = Vec::new();
-                    }
-
-                    if ui.button("Settings").clicked() {
-
-                        *settingsOpen = !*settingsOpen;
-                    }
-                });
-
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(8.0);
 
                 ui.label("Number of Players");
                 if ui.add(egui::Slider::new(playerCount, 4..=50).integer()).changed() {
@@ -133,6 +125,7 @@ impl eframe::App for TemplateApp {
                     *tableCount = *playerCount / 4;
                     *outCount = *playerCount % 4;
 
+                    *cardData = Vec::new();
                     *cardData = shuffle(*playerCount, *tableCount, *gameCount, *outCount);
                 }
 
@@ -144,6 +137,7 @@ impl eframe::App for TemplateApp {
                     *tableCount = *playerCount / 4;
                     *outCount = *playerCount % 4;
 
+                    *cardData = Vec::new();
                     *cardData = shuffle(*playerCount, *tableCount, *gameCount, *outCount);
                 }
                 
@@ -353,14 +347,6 @@ impl eframe::App for TemplateApp {
             });
         });
 
-        if false {
-            egui::Window::new("Window").show(ctx, |ui| {
-                ui.label("Windows can be moved by dragging them.");
-                ui.label("They are automatically sized based on contents.");
-                ui.label("You can turn on resizing and scrolling if you like.");
-                ui.label("You would normally choose either panels OR windows.");
-            });
-        }
     }
 }
 
@@ -538,15 +524,154 @@ fn formatPlayersVector(playerVec: Vec<usize>, separator: String, displayNames: b
     output
 }
 
-fn generateSpace(spaces: i32) -> String {
+fn exportPDF(path: PathBuf,
+            tableCount: usize,
+            outCount: usize,
+            gameCount: usize,
+            separator: String,
+            displayNames: bool,
+            cardData: Vec<(Vec<((usize, usize), (usize, usize))>, Vec<usize>)>,
+            playerNames: Vec<String>) {
 
-    let mut str = String::new();
+    let font_family = genpdf::fonts::from_files("./src/fonts", "LiberationSans", None)
+        .expect("Failed to load font family for pdf export");
 
-    for i in 0..spaces {
-        str += " ";
+    let mut doc = genpdf::Document::new(font_family);
+    doc.set_title("Euchre Party Rotator Export");
+
+    let margin = 15;
+
+    let mut decorator = genpdf::SimplePageDecorator::new();
+    decorator.set_margins(margin);
+    doc.set_page_decorator(decorator);
+
+    let padding = 1;
+    let widthFactor = 2.0;
+    let heightFactor = 1.0;
+    let mut paper_size: genpdf::Size = genpdf::Size::new(10, 10);
+    let mut column_weights = vec![8];
+
+    for table in 0..tableCount {
+        column_weights.append(&mut vec![1,10,8,10]);
     }
 
-    str
+    if outCount > 0 {
+        column_weights.append(&mut vec![1,10]);
+    }
+
+    let mut grid = genpdf::elements::TableLayout::new(column_weights);
+    let cell_decorator = genpdf::elements::FrameCellDecorator::new(true, false, false);
+    grid.set_cell_decorator(cell_decorator);
+
+    let style = genpdf::style::Style::new();
+
+    for gameId in 0..=gameCount {
+
+        let mut row = grid.row();
+        let mut rowWidth = genpdf::Mm::from(0.0);
+
+        for tableId in 0..=tableCount {
+
+            match gameId {
+                0 => {
+                    match tableId {
+                        0 => {
+                            let str = "Game";
+                            let mut text = genpdf::elements::Paragraph::new(str);
+                            text.set_alignment(genpdf::Alignment::Center);
+                            rowWidth += style.str_width(doc.font_cache(), str) + (2 * padding).into();
+                            row.push_element(text.styled(style.bold()).padded(padding));
+                        }
+                        _ => {
+                            row.push_element(genpdf::elements::Paragraph::new(""));
+                            row.push_element(genpdf::elements::Paragraph::new(""));
+
+                            let str = &format!("Table {}", tableId);
+                            let mut text = genpdf::elements::Paragraph::new(str);
+                            text.set_alignment(genpdf::Alignment::Center);
+                            rowWidth += style.str_width(doc.font_cache(), str) + (2 * padding).into();
+                            row.push_element(text.styled(style.bold()).padded(padding));
+
+                            row.push_element(genpdf::elements::Paragraph::new(""));
+                        }
+                    }
+                }
+                _ => {
+                    match tableId {
+                        0 => {
+                            let str = &format!("{}", gameId);
+                            let mut text = genpdf::elements::Paragraph::new(str);
+                            text.set_alignment(genpdf::Alignment::Center);
+                            rowWidth += style.str_width(doc.font_cache(), str) + (2 * padding).into();
+                            row.push_element(text.padded(padding));
+                        }
+                        _ => {
+                            let team = cardData[gameId - 1].0[tableId - 1];
+
+                            row.push_element(genpdf::elements::Paragraph::new(""));
+
+                            let str = &formatPlayersTuple(team.0, separator.clone(), displayNames, playerNames.clone());
+                            let mut text = genpdf::elements::Paragraph::new(str);
+                            text.set_alignment(genpdf::Alignment::Center);
+                            rowWidth += style.str_width(doc.font_cache(), str) + (2 * padding).into();
+                            row.push_element(text.padded(padding));
+
+                            let str = "vs";
+                            let mut text = genpdf::elements::Paragraph::new(str);
+                            text.set_alignment(genpdf::Alignment::Center);
+                            rowWidth += style.str_width(doc.font_cache(), str) + (2 * padding).into();
+                            row.push_element(text.styled(style.italic()).padded(padding));
+                            
+                            let str = &formatPlayersTuple(team.1, separator.clone(), displayNames, playerNames.clone());
+                            let mut text = genpdf::elements::Paragraph::new(str);
+                            text.set_alignment(genpdf::Alignment::Center);
+                            rowWidth += style.str_width(doc.font_cache(), str) + (2 * padding).into();
+                            row.push_element(text.padded(padding));
+                        }
+                    }
+                }
+            }
+        }
+
+        if outCount > 0 {
+
+            match gameId {
+                0 => {
+                    row.push_element(genpdf::elements::Paragraph::new(""));
+
+                    let str = "Out";
+                    let mut text = genpdf::elements::Paragraph::new(str);
+                    text.set_alignment(genpdf::Alignment::Center);
+                    rowWidth += style.str_width(doc.font_cache(), str) + (2 * padding).into();
+                    row.push_element(text.styled(style.bold()).padded(padding));
+                }
+                _ => {
+                    row.push_element(genpdf::elements::Paragraph::new(""));
+
+                    let str = &formatPlayersVector(cardData[gameId - 1].1.clone(), separator.clone(), displayNames, playerNames.clone());
+                    let mut text = genpdf::elements::Paragraph::new(str);
+                    text.set_alignment(genpdf::Alignment::Center);
+                    rowWidth += style.str_width(doc.font_cache(), str) + (2 * padding).into();
+                    row.push_element(text.padded(padding));
+                }
+            }
+        }
+
+        if rowWidth > paper_size.width {
+            paper_size.width = rowWidth;
+        }
+
+        paper_size.height += style.line_height(doc.font_cache()) + (2 * padding).into();
+        row.push().expect(&format!("Invalid Table Row {}", gameId));
+    }
+
+    paper_size.width += (2 * margin).into();
+    paper_size.width *= widthFactor;
+    paper_size.height += (2 * margin).into();
+    paper_size.height *= heightFactor;
+    doc.set_paper_size(paper_size);
+    doc.push(grid.framed());
+    doc.render_to_file(path).expect("Failed to write PDF file");
 }
 
 fn iWrap(index: isize, size: usize) -> usize {
